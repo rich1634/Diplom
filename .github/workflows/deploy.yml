@@ -1,0 +1,91 @@
+name: Deploy Nginx to EKS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  K8S_NAMESPACE: default
+  DEPLOYMENT_NAME: nginx-deployment
+  SERVICE_NAME: nginx-service
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+
+    - name: Configure kubectl for EKS
+      run: |
+        aws eks --region ${{ secrets.AWS_REGION }} update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl get namespace $K8S_NAMESPACE || kubectl create namespace $K8S_NAMESPACE
+
+    - name: Deploy Nginx Deployment
+      run: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: $DEPLOYMENT_NAME
+          namespace: $K8S_NAMESPACE
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: nginx
+          template:
+            metadata:
+              labels:
+                app: nginx
+            spec:
+              containers:
+              - name: nginx
+                image: nginx:latest
+                ports:
+                - containerPort: 80
+                resources:
+                  requests:
+                    cpu: "100m"
+                    memory: "128Mi"
+                  limits:
+                    cpu: "500m"
+                    memory: "512Mi"
+        EOF
+
+    - name: Deploy Nginx Service
+      run: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: $SERVICE_NAME
+          namespace: $K8S_NAMESPACE
+        spec:
+          type: LoadBalancer
+          selector:
+            app: nginx
+          ports:
+            - protocol: TCP
+              port: 80
+              targetPort: 80
+        EOF
+
+    - name: Verify deployment
+      run: |
+        kubectl get deployments -n $K8S_NAMESPACE
+        kubectl get pods -n $K8S_NAMESPACE
+        kubectl get svc -n $K8S_NAMESPACE
