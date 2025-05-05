@@ -1,91 +1,50 @@
-name: Deploy Nginx to EKS
-
+name: "Terraform CI/CD"
 on:
   push:
-    branches: [ main ]
-
-env:
-  K8S_NAMESPACE: default
-  DEPLOYMENT_NAME: nginx-deployment
-  SERVICE_NAME: nginx-service
+    branches: ["main"]     # Триггер на изменения в main
+  pull_request:            # Триггер на PR в любую ветку
 
 jobs:
-  deploy:
+  terraform:
+    name: "Terraform Plan & Apply"
     runs-on: ubuntu-latest
+    environment: production  # Для ручного подтверждения (опционально)
+    defaults:
+      run:
+        working-directory: ./terraform  # Путь к Terraform-коду
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      # 1. Checkout кода
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      # 2. Установка Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"  # Укажите нужную версию
 
-    - name: Install kubectl
-      uses: azure/setup-kubectl@v3
+      # 3. Инициализация Terraform (с AWS credentials)
+      - name: Terraform Init
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: terraform init
 
-    - name: Configure kubectl for EKS
-      run: |
-        aws eks --region ${{ secrets.AWS_REGION }} update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }}
+      # 4. Проверка форматирования
+      - name: Terraform Format Check
+        run: terraform fmt -check
 
-    - name: Create namespace if not exists
-      run: |
-        kubectl get namespace $K8S_NAMESPACE || kubectl create namespace $K8S_NAMESPACE
+      # 5. Проверка валидности конфига
+      - name: Terraform Validate
+        run: terraform validate
 
-    - name: Deploy Nginx Deployment
-      run: |
-        cat <<EOF | kubectl apply -f -
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: $DEPLOYMENT_NAME
-          namespace: $K8S_NAMESPACE
-        spec:
-          replicas: 2
-          selector:
-            matchLabels:
-              app: nginx
-          template:
-            metadata:
-              labels:
-                app: nginx
-            spec:
-              containers:
-              - name: nginx
-                image: nginx:latest
-                ports:
-                - containerPort: 80
-                resources:
-                  requests:
-                    cpu: "100m"
-                    memory: "128Mi"
-                  limits:
-                    cpu: "500m"
-                    memory: "512Mi"
-        EOF
+      # 6. Запуск Plan (для PR и push)
+      - name: Terraform Plan
+        run: terraform plan -input=false
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
 
-    - name: Deploy Nginx Service
-      run: |
-        cat <<EOF | kubectl apply -f -
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: $SERVICE_NAME
-          namespace: $K8S_NAMESPACE
-        spec:
-          type: LoadBalancer
-          selector:
-            app: nginx
-          ports:
-            - protocol: TCP
-              port: 80
-              targetPort: 80
-        EOF
-
-    - name: Verify deployment
-      run: |
-        kubectl get deployments -n $K8S_NAMESPACE
-        kubectl get pods -n $K8S_NAMESPACE
-        kubectl get svc -n $K8S_NAMESPACE
+      # 7. Запуск Apply (только для main)
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve -input=false
